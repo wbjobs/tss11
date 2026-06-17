@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>协同简谱/五线谱编辑器</title>
+  <link rel="stylesheet" href="/src/style.css" />
+</head>
+<body>
+  <div id="app">
+    <header id="toolbar">
+      <div class="toolbar-left">
+        <span class="app-title">🎵 协同乐谱编辑器</span>
+        <div class="connection-status" id="connStatus">● 未连接</div>
+      </div>
+      <div class="toolbar-center">
+        <button id="btnPlay" title="播放当前小节">▶ 播放</button>
+        <button id="btnStop" title="停止播放">■ 停止</button>
+        <button id="btnUndo" title="撤销">↩ 撤销</button>
+        <button id="btnClearMeasure" title="清空当前小节">🗑 清空小节</button>
+      </div>
+      <div class="toolbar-right">
+        <label>当前小节: <span id="measureDisplay">1</span></label>
+        <label>在线用户: <span id="userCount">1</span></label>
+      </div>
+    </header>
+
+    <main id="workspace">
+      <aside id="notePanel">
+        <h3>音符面板</h3>
+        <p class="panel-hint">拖拽到五线谱</p>
+        <div class="note-palette" id="notePalette"></div>
+        <h3>时值</h3>
+        <div class="duration-palette" id="durationPalette"></div>
+        <h3>简谱对照</h3>
+        <div class="jianpu-ref" id="jianpuRef"></div>
+      </aside>
+
+      <section id="scoreArea">
+        <canvas id="scoreCanvas"></canvas>
+        <div id="cursorInfo">小节 1, 拍 1</div>
+      </section>
+    </main>
+
+    <div id="remoteCursors"></div>
+  </div>
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>

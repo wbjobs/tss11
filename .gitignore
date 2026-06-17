@@ -1,34 +1,6 @@
-﻿# System
-.DS_Store
-Thumbs.db
-desktop.ini
-
-# Logs
-*.log
-logs/
-
-# Temp
-*.tmp
-*.bak
-*.swp
-
-# Build / Dependencies
-node_modules/
+﻿node_modules/
 dist/
-build/
-out/
-venv/
-env/
-__pycache__/
-*.pyc
-
-# IDE
-.idea/
-.vscode/
-*.suo
-*.user
-*.sln.cache
-
-# Env
-.env
-.env.local
+*.js
+*.d.ts
+*.js.map
+.dts/
