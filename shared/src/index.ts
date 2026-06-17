@@ -5,10 +5,15 @@ export {
   DURATION_BEATS,
   DURATION_SYMBOLS,
   DURATION_LABELS,
+  CRDT_WEIGHT,
+  INTERPOLATION,
   pitchToFrequency,
   pitchToStaffPosition,
   staffPositionToPitch,
   snapToGrid,
+  computeMergeScore,
+  lerpNumber,
+  easeOutCubic,
 } from './types';
 export type {
   Note,
@@ -18,4 +23,5 @@ export type {
   Operation,
   OperationType,
   SyncMessage,
+  ClientPosition,
 } from './types';

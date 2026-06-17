@@ -28,6 +28,8 @@ class App {
   private dragStartX = 0;
   private dragStartY = 0;
   private currentMeasure = 1;
+  private dragThrottleTimer: number | null = null;
+  private renderRafId: number | null = null;
 
   constructor() {
     const canvas = document.getElementById('scoreCanvas') as HTMLCanvasElement;
@@ -35,6 +37,15 @@ class App {
     this.doc = new ClientDocument();
     this.collab = new CollaborationClient('localhost', 4433);
     this.audio = new AudioEngine();
+
+    const metrics = this.renderer.getStaffMetrics();
+    this.doc.setStaffMetrics({
+      measureWidth: metrics.measureWidth,
+      lineSpacing: metrics.lineSpacing,
+      measuresPerStaff: metrics.measuresPerStaff,
+      staffTopY: metrics.staffTopY,
+      staffMarginX: metrics.staffMarginX,
+    });
 
     this.buildNotePanel();
     this.buildDurationPanel();
@@ -50,7 +61,11 @@ class App {
       } catch (e) {
         console.error('[App] Failed to send op:', e);
       }
-      this.renderer.setNotes(this.doc.getNotes());
+      this.scheduleRender();
+    });
+
+    this.doc.onRemoteNoteChange((_noteId, _newNote, _prevNote) => {
+      this.scheduleRender();
     });
 
     this.renderer.render();
@@ -67,6 +82,14 @@ class App {
         this.renderer.setNotes(notes);
       },
     };
+  }
+
+  private scheduleRender() {
+    if (this.renderRafId !== null) return;
+    this.renderRafId = requestAnimationFrame(() => {
+      this.renderRafId = null;
+      this.renderer.setNotes(this.doc.getNotes());
+    });
   }
 
   private buildNotePanel() {
@@ -127,6 +150,7 @@ class App {
       const rect = canvas.getBoundingClientRect();
       const mx = e.clientX - rect.left;
       const my = e.clientY - rect.top;
+      this.doc.setCursorPosition({ cursorX: mx, cursorY: my });
 
       const metrics = this.renderer.getStaffMetrics();
       const snapped = snapToGrid(
@@ -144,12 +168,12 @@ class App {
         pitchName: snapped.pitch,
         duration: this.selectedDuration,
       };
-      this.renderer.render();
+      this.scheduleRender();
     });
 
     canvas.addEventListener('dragleave', () => {
       this.renderer.ghostNote = null;
-      this.renderer.render();
+      this.scheduleRender();
     });
 
     canvas.addEventListener('drop', (e) => {
@@ -163,13 +187,32 @@ class App {
       const mx = e.clientX - rect.left;
       const my = e.clientY - rect.top;
 
+      this.doc.setCursorPosition({ cursorX: mx, cursorY: my });
       this.addNoteAtPosition(pitchName, mx, my);
+    });
+
+    canvas.addEventListener('mousemove', (e) => {
+      const rect = canvas.getBoundingClientRect();
+      const mx = e.clientX - rect.left;
+      const my = e.clientY - rect.top;
+      this.doc.setCursorPosition({ cursorX: mx, cursorY: my });
+
+      if (this.isDragging && this.dragNoteId) {
+        if (this.dragThrottleTimer !== null) return;
+        this.dragThrottleTimer = window.setTimeout(() => {
+          this.dragThrottleTimer = null;
+          this.handleDragMove();
+        }, 12);
+        this.doc.beginDragUpdate(this.dragNoteId, { x: mx, y: my });
+        this.scheduleRender();
+      }
     });
 
     canvas.addEventListener('mousedown', (e) => {
       const rect = canvas.getBoundingClientRect();
       const mx = e.clientX - rect.left;
       const my = e.clientY - rect.top;
+      this.doc.setCursorPosition({ cursorX: mx, cursorY: my });
 
       const hit = this.renderer.hitTestNote(mx, my);
       if (hit) {
@@ -179,13 +222,12 @@ class App {
         this.dragStartX = mx;
         this.dragStartY = my;
         this.renderer.selectedNoteId = hit.id;
-        this.renderer.render();
+        this.scheduleRender();
         this.audio.previewNote(hit);
       } else {
         this.selectedNoteId = null;
         this.dragNoteId = null;
         this.renderer.selectedNoteId = null;
-        this.renderer.render();
 
         const metrics = this.renderer.getStaffMetrics();
         const snapped = snapToGrid(mx, my, metrics.measureWidth, metrics.lineSpacing, metrics.measuresPerStaff, metrics.staffTopY, metrics.staffMarginX);
@@ -194,39 +236,16 @@ class App {
         this.renderer.cursorBeat = snapped.beat;
         document.getElementById('measureDisplay')!.textContent = `${snapped.measure}`;
         document.getElementById('cursorInfo')!.textContent = `小节 ${snapped.measure}, 拍 ${snapped.beat + 1}`;
-        this.renderer.render();
-      }
-    });
-
-    canvas.addEventListener('mousemove', (e) => {
-      if (!this.isDragging || !this.dragNoteId) return;
-      const rect = canvas.getBoundingClientRect();
-      const mx = e.clientX - rect.left;
-      const my = e.clientY - rect.top;
-
-      const dx = mx - this.dragStartX;
-      const dy = my - this.dragStartY;
-
-      if (Math.abs(dx) > 5 || Math.abs(dy) > 5) {
-        const metrics = this.renderer.getStaffMetrics();
-        const snapped = snapToGrid(mx, my, metrics.measureWidth, metrics.lineSpacing, metrics.measuresPerStaff, metrics.staffTopY, metrics.staffMarginX);
-
-        const note = this.doc.getNotes().find((n) => n.id === this.dragNoteId);
-        if (note) {
-          const octave = my < this.renderer.config.staffTopY + this.renderer.config.lineSpacing * 2 ? 5 : 4;
-          this.doc.updateNote(this.dragNoteId, {
-            x: snapped.snappedX,
-            y: snapped.snappedY,
-            measure: snapped.measure,
-            beat: snapped.beat,
-            pitch: { name: snapped.pitch as PitchName, octave, accidental: '' },
-          });
-          this.renderer.setNotes(this.doc.getNotes());
-        }
+        this.scheduleRender();
       }
     });
 
     canvas.addEventListener('mouseup', () => {
+      if (this.dragThrottleTimer !== null) {
+        clearTimeout(this.dragThrottleTimer);
+        this.dragThrottleTimer = null;
+        this.handleDragMove();
+      }
       this.isDragging = false;
       this.dragNoteId = null;
     });
@@ -237,14 +256,14 @@ class App {
           this.doc.removeNote(this.selectedNoteId);
           this.selectedNoteId = null;
           this.renderer.selectedNoteId = null;
-          this.renderer.setNotes(this.doc.getNotes());
+          this.scheduleRender();
         }
       }
 
       if (e.key === 'Escape') {
         this.selectedNoteId = null;
         this.renderer.selectedNoteId = null;
-        this.renderer.render();
+        this.scheduleRender();
       }
 
       const pitchMap: Record<string, PitchName> = {
@@ -255,6 +274,23 @@ class App {
         this.addNoteAtCursor(pitchMap[e.key]);
       }
     });
+  }
+
+  private handleDragMove() {
+    if (!this.dragNoteId) return;
+    const metrics = this.renderer.getStaffMetrics();
+    const rendered = this.doc.getRenderedNote(this.dragNoteId);
+    if (!rendered) return;
+    const snapped = snapToGrid(rendered.x, rendered.y, metrics.measureWidth, metrics.lineSpacing, metrics.measuresPerStaff, metrics.staffTopY, metrics.staffMarginX);
+    const octave = rendered.y < metrics.staffTopY + metrics.lineSpacing * 2 ? 5 : 4;
+    this.doc.updateNote(this.dragNoteId, {
+      x: snapped.snappedX,
+      y: snapped.snappedY,
+      measure: snapped.measure,
+      beat: snapped.beat,
+      pitch: { name: snapped.pitch as PitchName, octave, accidental: '' },
+    }, true);
+    this.scheduleRender();
   }
 
   private addNoteAtPosition(pitchName: PitchName, mx: number, my: number) {
@@ -272,7 +308,7 @@ class App {
       beat: snapped.beat,
     });
 
-    this.renderer.setNotes(this.doc.getNotes());
+    this.scheduleRender();
   }
 
   private addNoteAtCursor(pitchName: PitchName) {
@@ -291,7 +327,7 @@ class App {
       beat: 0,
     });
 
-    this.renderer.setNotes(this.doc.getNotes());
+    this.scheduleRender();
 
     const note: Note = {
       id: '', pitch: { name: pitchName, octave: 4, accidental: '' },
@@ -314,7 +350,7 @@ class App {
 
       this.audio.playChord(notes, (beat) => {
         this.renderer.playbackBeat = beat;
-        this.renderer.render();
+        this.scheduleRender();
       });
     });
 
@@ -322,12 +358,12 @@ class App {
       this.audio.stop();
       this.renderer.playingMeasure = null;
       this.renderer.playbackBeat = 0;
-      this.renderer.render();
+      this.scheduleRender();
     });
 
     document.getElementById('btnUndo')!.addEventListener('click', () => {
       this.doc.undo();
-      this.renderer.setNotes(this.doc.getNotes());
+      this.scheduleRender();
     });
 
     document.getElementById('btnClearMeasure')!.addEventListener('click', () => {
@@ -335,7 +371,7 @@ class App {
       for (const note of notes) {
         this.doc.removeNote(note.id);
       }
-      this.renderer.setNotes(this.doc.getNotes());
+      this.scheduleRender();
     });
   }
 
@@ -344,24 +380,16 @@ class App {
     const userCountEl = document.getElementById('userCount')!;
 
     this.collab.onMessage((msg: SyncMessage) => {
-      console.log('[App] Received message:', msg.type);
       try {
         if (msg.type === 'full-sync') {
           const notes = msg.payload as Note[];
-          console.log('[App] full-sync notes count:', notes.length, 'sample:', notes[0]);
           this.doc.loadFullSync(notes);
-          console.log('[App] loadFullSync OK, total notes:', this.doc.getNotes().length);
-          this.renderer.setNotes(this.doc.getNotes());
-          console.log('[App] renderer.setNotes OK');
+          this.scheduleRender();
           userCountEl.textContent = '2+';
         } else if (msg.type === 'op') {
           const op = msg.payload as Operation;
-          console.log('[App] remote op:', op.type, op.note.pitch?.name);
-          const changed = this.doc.applyRemoteOperation(op);
-          console.log('[App] remote op applied, changed:', changed);
-          if (changed) {
-            this.renderer.setNotes(this.doc.getNotes());
-          }
+          this.doc.applyRemoteOperation(op);
+          this.scheduleRender();
         }
       } catch (e) {
         console.error('[App] Handler error:', (e as Error).message, (e as Error).stack);
@@ -383,6 +411,15 @@ class App {
   private setupResize() {
     window.addEventListener('resize', () => {
       this.renderer.resize();
+      const metrics = this.renderer.getStaffMetrics();
+      this.doc.setStaffMetrics({
+        measureWidth: metrics.measureWidth,
+        lineSpacing: metrics.lineSpacing,
+        measuresPerStaff: metrics.measuresPerStaff,
+        staffTopY: metrics.staffTopY,
+        staffMarginX: metrics.staffMarginX,
+      });
+      this.scheduleRender();
     });
   }
 }

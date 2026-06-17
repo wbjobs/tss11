@@ -17,6 +17,13 @@ export interface Note {
   beat: number;
 }
 
+export interface ClientPosition {
+  clientId: string;
+  cursorX: number;
+  cursorY: number;
+  lastUpdate: number;
+}
+
 export type OperationType = 'add' | 'remove' | 'update';
 
 export interface Operation {
@@ -24,11 +31,13 @@ export interface Operation {
   note: Note;
   timestamp: number;
   clientId: string;
+  authorPosition?: ClientPosition;
 }
 
 export interface SyncMessage {
   type: 'op' | 'full-sync' | 'ack';
   payload: Operation | Note[] | { version: number };
+  serverTimestamp?: number;
 }
 
 export const PITCH_NAMES: PitchName[] = ['C', 'D', 'E', 'F', 'G', 'A', 'B'];
@@ -60,6 +69,54 @@ export const DURATION_LABELS: Record<Duration, string> = {
   eighth: '八分',
   sixteenth: '十六分',
 };
+
+export const CRDT_WEIGHT = {
+  DISTANCE_DECAY: 0.003,
+  MAX_DISTANCE: 800,
+  TIME_WEIGHT: 0.45,
+  DISTANCE_WEIGHT: 0.40,
+  OWNERSHIP_BONUS: 0.15,
+  OWNERSHIP_HOLD_MS: 800,
+} as const;
+
+export const INTERPOLATION = {
+  REMOTE_POS_MS: 220,
+  UPDATE_THROTTLE_MS: 16,
+} as const;
+
+function dist2(x1: number, y1: number, x2: number, y2: number): number {
+  const dx = x1 - x2;
+  const dy = y1 - y2;
+  return dx * dx + dy * dy;
+}
+
+export function computeMergeScore(op: Operation, noteAnchor: { x: number; y: number } | null, ownerClientId: string | null, ownerTimestamp: number): number {
+  const { timestamp, clientId, authorPosition, note } = op;
+
+  const recency = Math.max(0, Math.min(1, timestamp / (Date.now() + 100000)));
+  const timeScore = CRDT_WEIGHT.TIME_WEIGHT * recency;
+
+  let distanceScore = 0;
+  if (authorPosition && noteAnchor) {
+    const d2 = dist2(authorPosition.cursorX, authorPosition.cursorY, noteAnchor.x, noteAnchor.y);
+    const d = Math.sqrt(d2);
+    const clampedD = Math.min(d, CRDT_WEIGHT.MAX_DISTANCE);
+    const decay = Math.exp(-CRDT_WEIGHT.DISTANCE_DECAY * clampedD);
+    distanceScore = CRDT_WEIGHT.DISTANCE_WEIGHT * decay;
+  } else if (!authorPosition && !noteAnchor) {
+    distanceScore = CRDT_WEIGHT.DISTANCE_WEIGHT * 0.3;
+  }
+
+  let ownerBonus = 0;
+  if (ownerClientId === clientId) {
+    const hold = Date.now() - ownerTimestamp;
+    if (hold < CRDT_WEIGHT.OWNERSHIP_HOLD_MS) {
+      ownerBonus = CRDT_WEIGHT.OWNERSHIP_BONUS * (1 - hold / CRDT_WEIGHT.OWNERSHIP_HOLD_MS);
+    }
+  }
+
+  return timeScore + distanceScore + ownerBonus;
+}
 
 export function pitchToFrequency(pitch: NotePitch): number {
   const semitoneMap: Record<PitchName, number> = {
@@ -112,4 +169,12 @@ export function snapToGrid(
     snappedY: staffTopY + (6 - staffPos) * (lineSpacing / 2),
     pitch: pitch.name,
   };
+}
+
+export function lerpNumber(a: number, b: number, t: number): number {
+  return a + (b - a) * t;
+}
+
+export function easeOutCubic(t: number): number {
+  return 1 - Math.pow(1 - t, 3);
 }
