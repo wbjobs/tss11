@@ -272,6 +272,16 @@ export class CollaborationClient {
     await this.transport.send(data);
   }
 
+  async send(message: string): Promise<void> {
+    if (!this.transport) {
+      console.warn('[Transport] No transport available');
+      return;
+    }
+    const json = message + '\n';
+    const data = new TextEncoder().encode(json);
+    await this.transport.send(data);
+  }
+
   async disconnect() {
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     if (this.transport) {

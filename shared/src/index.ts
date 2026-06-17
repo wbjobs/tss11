@@ -1,5 +1,12 @@
 export { CRDTDocument } from './crdt';
 export {
+  identifyChord,
+  analyzeChordProgression,
+  getChordRootSemitone,
+  getChordPitches,
+  getChordNotePitches,
+} from './chord-recognition';
+export {
   PITCH_NAMES,
   JIANPU_MAP,
   DURATION_BEATS,
@@ -7,6 +14,7 @@ export {
   DURATION_LABELS,
   CRDT_WEIGHT,
   INTERPOLATION,
+  ACCOMPANIMENT,
   pitchToFrequency,
   pitchToStaffPosition,
   staffPositionToPitch,
@@ -24,4 +32,9 @@ export type {
   OperationType,
   SyncMessage,
   ClientPosition,
+  TrackType,
+  OwnerRole,
+  Chord,
+  ChordQuality,
+  AccompanimentPattern,
 } from './types';

@@ -1,5 +1,9 @@
 export type PitchName = 'C' | 'D' | 'E' | 'F' | 'G' | 'A' | 'B';
 export type Duration = 'whole' | 'half' | 'quarter' | 'eighth' | 'sixteenth';
+export type TrackType = 'melody' | 'accompaniment';
+export type OwnerRole = 'host' | 'guest';
+export type ChordQuality = 'major' | 'minor' | 'diminished' | 'augmented' | 'dominant7' | 'major7' | 'minor7' | 'halfDiminished7' | 'diminished7';
+export type AccompanimentPattern = 'alberti' | 'arpeggio' | 'ostinato' | 'walkingBass';
 
 export interface NotePitch {
   name: PitchName;
@@ -15,6 +19,8 @@ export interface Note {
   y: number;
   measure: number;
   beat: number;
+  track?: TrackType;
+  isAccompaniment?: boolean;
 }
 
 export interface ClientPosition {
@@ -22,6 +28,16 @@ export interface ClientPosition {
   cursorX: number;
   cursorY: number;
   lastUpdate: number;
+}
+
+export interface Chord {
+  name: string;
+  root: PitchName;
+  accidental: '' | '#' | 'b';
+  quality: ChordQuality;
+  pitches: number[];
+  measure: number;
+  confidence: number;
 }
 
 export type OperationType = 'add' | 'remove' | 'update';
@@ -32,11 +48,13 @@ export interface Operation {
   timestamp: number;
   clientId: string;
   authorPosition?: ClientPosition;
+  ownerRole?: OwnerRole;
+  track?: TrackType;
 }
 
 export interface SyncMessage {
-  type: 'op' | 'full-sync' | 'ack';
-  payload: Operation | Note[] | { version: number };
+  type: 'op' | 'full-sync' | 'ack' | 'request-accompaniment' | 'accompaniment-result' | 'chord-analysis' | 'role-assign' | 'welcome';
+  payload: Operation | Note[] | { version: number } | { measure?: number; clearExisting?: boolean } | { chords: Chord[]; notes: Note[] } | Chord[] | { role: OwnerRole; clientId: string; hostClientId: string } | { clientId: string };
   serverTimestamp?: number;
 }
 
@@ -91,7 +109,7 @@ function dist2(x1: number, y1: number, x2: number, y2: number): number {
 }
 
 export function computeMergeScore(op: Operation, noteAnchor: { x: number; y: number } | null, ownerClientId: string | null, ownerTimestamp: number): number {
-  const { timestamp, clientId, authorPosition, note } = op;
+  const { timestamp, clientId, authorPosition, note, track } = op;
 
   const recency = Math.max(0, Math.min(1, timestamp / (Date.now() + 100000)));
   const timeScore = CRDT_WEIGHT.TIME_WEIGHT * recency;
@@ -115,7 +133,13 @@ export function computeMergeScore(op: Operation, noteAnchor: { x: number; y: num
     }
   }
 
-  return timeScore + distanceScore + ownerBonus;
+  let baseScore = timeScore + distanceScore + ownerBonus;
+
+  if (note.isAccompaniment || track === 'accompaniment') {
+    baseScore = baseScore * (1 - ACCOMPANIMENT.TRACK_WEIGHT_PENALTY);
+  }
+
+  return baseScore;
 }
 
 export function pitchToFrequency(pitch: NotePitch): number {
@@ -178,3 +202,12 @@ export function lerpNumber(a: number, b: number, t: number): number {
 export function easeOutCubic(t: number): number {
   return 1 - Math.pow(1 - t, 3);
 }
+
+export const ACCOMPANIMENT = {
+  TRACK_WEIGHT_PENALTY: 0.25,
+  DEFAULT_OCTAVE_SHIFT: -1,
+  MIN_NOTES_FOR_CHORD: 2,
+  DEFAULT_PATTERN: 'alberti' as AccompanimentPattern,
+  NOTE_OPACITY: 0.45,
+  COLOR: '#8a94ff',
+} as const;

@@ -5,6 +5,7 @@ import {
   JIANPU_MAP,
   DURATION_SYMBOLS,
   pitchToStaffPosition,
+  ACCOMPANIMENT,
 } from 'shared';
 
 interface RenderConfig {
@@ -22,6 +23,8 @@ interface RenderConfig {
 export class ScoreRenderer {
   config: RenderConfig;
   notes: Note[] = [];
+  accompanimentNotes: Note[] = [];
+  showAccompaniment: boolean = true;
   selectedNoteId: string | null = null;
   cursorMeasure = 1;
   cursorBeat = 0;
@@ -73,6 +76,16 @@ export class ScoreRenderer {
     this.render();
   }
 
+  setAccompanimentNotes(notes: Note[]) {
+    this.accompanimentNotes = notes;
+    this.render();
+  }
+
+  toggleAccompanimentLayer(show: boolean) {
+    this.showAccompaniment = show;
+    this.render();
+  }
+
   render() {
     const { ctx, canvas, lineSpacing, staffTopY, staffMarginX, measuresPerStaff, noteRadius, measureWidth } = this.config;
     const w = canvas.getBoundingClientRect().width;
@@ -87,7 +100,10 @@ export class ScoreRenderer {
       this.drawStaff(currentStaffTopY, w);
       this.drawMeasureLines(currentStaffTopY);
       this.drawClef(currentStaffTopY);
-      this.drawNotes(currentStaffTopY, staffIdx);
+      if (this.showAccompaniment) {
+        this.drawNotes(currentStaffTopY, staffIdx, true);
+      }
+      this.drawNotes(currentStaffTopY, staffIdx, false);
     }
 
     this.drawGhostNote();
@@ -141,12 +157,13 @@ export class ScoreRenderer {
     ctx.fillText('\u{1D11E}', staffMarginX - 50, topY + lineSpacing * 2);
   }
 
-  private drawNotes(staffTopY: number, staffIdx: number) {
+  private drawNotes(staffTopY: number, staffIdx: number, isAccompaniment: boolean = false) {
     const { measuresPerStaff } = this.config;
     const startMeasure = staffIdx * measuresPerStaff + 1;
     const endMeasure = startMeasure + measuresPerStaff;
 
-    const staffNotes = this.notes.filter(
+    const notesToDraw = isAccompaniment ? this.accompanimentNotes : this.notes;
+    const staffNotes = notesToDraw.filter(
       (n) => n.measure >= startMeasure && n.measure < endMeasure
     );
 
@@ -154,7 +171,7 @@ export class ScoreRenderer {
       const pos = this.noteToCanvasPos(note, staffTopY, staffIdx);
       const isSelected = note.id === this.selectedNoteId;
       const isPlaying = this.playingMeasure === note.measure;
-      this.drawSingleNote(pos.x, pos.y, note, isSelected, isPlaying, staffTopY);
+      this.drawSingleNote(pos.x, pos.y, note, isSelected, isPlaying, staffTopY, isAccompaniment);
     }
   }
 
@@ -174,22 +191,27 @@ export class ScoreRenderer {
     note: Note,
     isSelected: boolean,
     isPlaying: boolean,
-    staffTopY: number
+    staffTopY: number,
+    isAccompaniment?: boolean
   ) {
     const { ctx, lineSpacing, noteRadius } = this.config;
+
+    if (isAccompaniment) {
+      ctx.globalAlpha = ACCOMPANIMENT.NOTE_OPACITY;
+    }
 
     if (y < staffTopY - lineSpacing * 2 || y > staffTopY + lineSpacing * 6) {
       this.drawLedgerLines(x, y, staffTopY);
     }
 
     if (note.pitch.accidental === '#') {
-      ctx.fillStyle = '#ffc44e';
+      ctx.fillStyle = isAccompaniment ? ACCOMPANIMENT.COLOR : '#ffc44e';
       ctx.font = `${lineSpacing * 1.5}px serif`;
       ctx.textAlign = 'right';
       ctx.textBaseline = 'middle';
       ctx.fillText('\u266F', x - noteRadius - 4, y);
     } else if (note.pitch.accidental === 'b') {
-      ctx.fillStyle = '#ffc44e';
+      ctx.fillStyle = isAccompaniment ? ACCOMPANIMENT.COLOR : '#ffc44e';
       ctx.font = `${lineSpacing * 1.5}px serif`;
       ctx.textAlign = 'right';
       ctx.textBaseline = 'middle';
@@ -209,6 +231,10 @@ export class ScoreRenderer {
       ctx.fillStyle = '#4ecb71';
       ctx.shadowColor = '#4ecb71';
       ctx.shadowBlur = 8;
+    } else if (isAccompaniment) {
+      ctx.fillStyle = ACCOMPANIMENT.COLOR;
+      ctx.shadowColor = 'transparent';
+      ctx.shadowBlur = 0;
     } else {
       ctx.fillStyle = '#6c8cff';
       ctx.shadowColor = 'transparent';
@@ -218,7 +244,7 @@ export class ScoreRenderer {
     ctx.shadowBlur = 0;
 
     if (note.duration === 'half' || note.duration === 'whole') {
-      ctx.strokeStyle = isSelected ? '#ffc44e' : isPlaying ? '#4ecb71' : '#1a1d27';
+      ctx.strokeStyle = isSelected ? '#ffc44e' : isPlaying ? '#4ecb71' : isAccompaniment ? ACCOMPANIMENT.COLOR : '#1a1d27';
       ctx.lineWidth = 1.5;
       ctx.stroke();
     }
@@ -230,30 +256,34 @@ export class ScoreRenderer {
       ctx.beginPath();
       ctx.moveTo(stemX, y);
       ctx.lineTo(stemX, y + stemDir * stemLen);
-      ctx.strokeStyle = isSelected ? '#ffc44e' : isPlaying ? '#4ecb71' : '#6c8cff';
+      ctx.strokeStyle = isSelected ? '#ffc44e' : isPlaying ? '#4ecb71' : isAccompaniment ? ACCOMPANIMENT.COLOR : '#6c8cff';
       ctx.lineWidth = 1.5;
       ctx.stroke();
 
       if (note.duration === 'eighth') {
-        this.drawFlag(stemX, y + stemDir * stemLen, stemDir, 1, isSelected, isPlaying);
+        this.drawFlag(stemX, y + stemDir * stemLen, stemDir, 1, isSelected, isPlaying, isAccompaniment);
       } else if (note.duration === 'sixteenth') {
-        this.drawFlag(stemX, y + stemDir * stemLen, stemDir, 2, isSelected, isPlaying);
+        this.drawFlag(stemX, y + stemDir * stemLen, stemDir, 2, isSelected, isPlaying, isAccompaniment);
       }
     }
 
     const jianpu = JIANPU_MAP[note.pitch.name];
     const octDots = note.pitch.octave > 4 ? '\u00B7'.repeat(note.pitch.octave - 4) : '';
     const octUnders = note.pitch.octave < 4 ? '_'.repeat(4 - note.pitch.octave) : '';
-    ctx.fillStyle = isSelected ? '#ffc44e' : isPlaying ? '#4ecb71' : '#9ca3b8';
+    ctx.fillStyle = isSelected ? '#ffc44e' : isPlaying ? '#4ecb71' : isAccompaniment ? ACCOMPANIMENT.COLOR : '#9ca3b8';
     ctx.font = '10px system-ui';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'top';
     ctx.fillText(`${jianpu}${octDots}${octUnders}`, x, staffTopY + lineSpacing * 5 + 4);
+
+    if (isAccompaniment) {
+      ctx.globalAlpha = 1;
+    }
   }
 
-  private drawFlag(x: number, y: number, dir: number, count: number, isSelected: boolean, isPlaying: boolean) {
+  private drawFlag(x: number, y: number, dir: number, count: number, isSelected: boolean, isPlaying: boolean, isAccompaniment?: boolean) {
     const { ctx, lineSpacing } = this.config;
-    ctx.strokeStyle = isSelected ? '#ffc44e' : isPlaying ? '#4ecb71' : '#6c8cff';
+    ctx.strokeStyle = isSelected ? '#ffc44e' : isPlaying ? '#4ecb71' : isAccompaniment ? ACCOMPANIMENT.COLOR : '#6c8cff';
     ctx.lineWidth = 2;
     for (let i = 0; i < count; i++) {
       const flagY = y + i * 6 * dir;

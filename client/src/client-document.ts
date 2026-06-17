@@ -3,11 +3,18 @@ import {
   Operation,
   ClientPosition,
   INTERPOLATION,
+  ACCOMPANIMENT,
   lerpNumber,
   easeOutCubic,
   snapToGrid,
 } from 'shared';
 import { CRDTDocument } from 'shared';
+import type {
+  OwnerRole,
+  AccompanimentPattern,
+  Chord,
+  TrackType,
+} from 'shared';
 
 function generateId(): string {
   return Math.random().toString(36).substring(2, 10) + Date.now().toString(36);
@@ -41,9 +48,14 @@ export class ClientDocument {
   private undoStack: Operation[] = [];
   private onLocalOp: ((op: Operation) => void) | null = null;
   private onRemoteApplied: ((noteId: string, newNote: Note | null, prevNote: Note | null) => void) | null = null;
+  private _onSendMessage: ((type: string, payload: any) => void) | null = null;
+  private _onChordAnalysis: ((chords: Chord[]) => void) | null = null;
   private interpolations: Map<string, InterpolationState> = new Map();
   private rafId: number | null = null;
   private cursorPosition: ClientPosition | null = null;
+  private ownerRole: OwnerRole = 'guest';
+  private hostClientId: string | null = null;
+  private showAccompaniment: boolean = true;
   private staffMetrics: {
     measureWidth: number;
     lineSpacing: number;
@@ -59,6 +71,10 @@ export class ClientDocument {
 
   getClientId(): string {
     return this.baseDoc.getClientId();
+  }
+
+  setClientId(id: string): void {
+    this.baseDoc.setClientId(id);
   }
 
   setStaffMetrics(metrics: {
@@ -86,6 +102,55 @@ export class ClientDocument {
 
   onRemoteNoteChange(handler: (noteId: string, newNote: Note | null, prevNote: Note | null) => void) {
     this.onRemoteApplied = handler;
+  }
+
+  onSendMessage(handler: (type: string, payload: any) => void) {
+    this._onSendMessage = handler;
+  }
+
+  onChordAnalysis(handler: (chords: Chord[]) => void) {
+    this._onChordAnalysis = handler;
+  }
+
+  setOwnerRole(role: OwnerRole) {
+    this.ownerRole = role;
+  }
+
+  setHostClientId(id: string) {
+    this.hostClientId = id;
+  }
+
+  isHost(): boolean {
+    return this.ownerRole === 'host';
+  }
+
+  toggleAccompanimentLayer(show: boolean) {
+    this.showAccompaniment = show;
+  }
+
+  generateAccompanimentRequest(options?: { pattern?: AccompanimentPattern; clearExisting?: boolean }) {
+    const payload = {
+      pattern: options?.pattern || ACCOMPANIMENT.DEFAULT_PATTERN,
+      clearExisting: options?.clearExisting ?? true,
+    };
+    this._onSendMessage?.('request-accompaniment', payload);
+  }
+
+  handleAccompanimentResult(notes: Note[]) {
+    for (const note of notes) {
+      const accompanimentNote: Note = {
+        ...note,
+        isAccompaniment: true,
+        track: 'accompaniment',
+      };
+      const op = this.baseDoc.addNote(accompanimentNote);
+      this.renderCache.set(accompanimentNote.id, { ...accompanimentNote });
+      this.onRemoteApplied?.(accompanimentNote.id, accompanimentNote, null);
+    }
+  }
+
+  handleChordAnalysis(chords: Chord[]) {
+    this._onChordAnalysis?.(chords);
   }
 
   private collectPendingOpsForNote(noteId: string): Operation[] {
@@ -187,6 +252,14 @@ export class ClientDocument {
     }
 
     const noteId = op.note.id;
+    const isAccompanimentNote = op.note.isAccompaniment || op.note.track === 'accompaniment';
+    const isOpFromHost = op.clientId === this.hostClientId;
+    const opHasHostRole = op.ownerRole === 'host';
+
+    if (isAccompanimentNote && !isOpFromHost && !opHasHostRole) {
+      return false;
+    }
+
     const prevRendered = this.getRenderedNote(noteId);
     const baseBefore = this.baseDoc.getNote(noteId);
 
@@ -377,6 +450,15 @@ export class ClientDocument {
 
   getNotesByMeasure(measure: number): Note[] {
     return this.getNotes().filter((n) => n.measure === measure);
+  }
+
+  getAccompanimentNotes(): Note[] {
+    if (!this.showAccompaniment) return [];
+    return this.getNotes().filter((n) => n.isAccompaniment || n.track === 'accompaniment');
+  }
+
+  getMelodyNotes(): Note[] {
+    return this.getNotes().filter((n) => !n.isAccompaniment && n.track !== 'accompaniment');
   }
 
   undo(): Operation | null {

@@ -8,7 +8,11 @@ import {
   Operation,
   SyncMessage,
   Note,
+  Chord,
+  AccompanimentPattern,
+  analyzeChordProgression,
 } from '../../shared/src/index';
+import { AccompanimentGenerator } from './markov-accompaniment';
 
 interface ClientSession {
   id: string;
@@ -20,6 +24,8 @@ interface ClientSession {
 
 const clients: Map<string, ClientSession> = new Map();
 const doc = new CRDTDocument('server');
+let hostClientId: string | null = null;
+const accompanimentGenerator = new AccompanimentGenerator();
 
 function ensureCerts(): { key: string; cert: string } {
   const certDir = join(process.cwd(), 'certs');
@@ -92,8 +98,9 @@ function handleMessage(rawData: string | Buffer, clientId: string) {
 
       if (msg.type === 'op') {
         const op = msg.payload as Operation;
-        const changed = doc.applyOperation(op);
-        if (changed) {
+        op.ownerRole = clientId === hostClientId ? 'host' : 'guest';
+        const result = doc.applyOperation(op);
+        if (result.changed) {
           broadcast(msg, clientId);
         }
       } else if (msg.type === 'full-sync') {
@@ -102,6 +109,60 @@ function handleMessage(rawData: string | Buffer, clientId: string) {
         const client = clients.get(clientId);
         if (client && client.ws.readyState === WebSocket.OPEN) {
           client.ws.send(encode(syncMsg));
+        }
+      } else if (msg.type === 'request-accompaniment') {
+        if (clientId !== hostClientId) {
+          console.log(`[WARN] Non-host client ${clientId} attempted to request accompaniment`);
+          continue;
+        }
+
+        const payload = msg.payload as { clearExisting?: boolean; pattern?: AccompanimentPattern };
+        const notes = doc.getNotes();
+        const chordMap = analyzeChordProgression(notes);
+        const chords = Array.from(chordMap.values());
+
+        console.log(`[ACCOMPANIMENT] Analyzed ${chords.length} chords from ${notes.length} notes`);
+
+        const staffMetrics = {
+          staffTopY: 60,
+          lineSpacing: 14,
+          staffMarginX: 80,
+          measureWidth: 381,
+          measuresPerStaff: 4,
+        };
+
+        if (payload.clearExisting) {
+          doc.clearAccompaniment();
+          console.log('[ACCOMPANIMENT] Cleared existing accompaniment');
+        }
+
+        const accompanimentNotes = accompanimentGenerator.generate(chords, {
+          pattern: payload.pattern,
+          staffMetrics,
+        });
+
+        doc.addAccompanimentNotes(accompanimentNotes);
+        console.log(`[ACCOMPANIMENT] Generated ${accompanimentNotes.length} accompaniment notes`);
+
+        const resultMsg: SyncMessage = {
+          type: 'accompaniment-result',
+          payload: { chords, notes: accompanimentNotes },
+        };
+        broadcast(resultMsg);
+      } else if (msg.type === 'chord-analysis') {
+        const notes = doc.getNotes();
+        const chordMap = analyzeChordProgression(notes);
+        const chords = Array.from(chordMap.values());
+
+        console.log(`[CHORD-ANALYSIS] Client ${clientId} requested chord analysis, found ${chords.length} chords`);
+
+        const resultMsg: SyncMessage = {
+          type: 'chord-analysis',
+          payload: chords,
+        };
+        const client = clients.get(clientId);
+        if (client && client.ws.readyState === WebSocket.OPEN) {
+          client.ws.send(encode(resultMsg));
         }
       }
     }
@@ -128,17 +189,74 @@ function handleConnection(ws: WebSocket, _req: IncomingMessage) {
 
   clients.set(clientId, client);
 
+  const welcomeMsg: SyncMessage = {
+    type: 'welcome',
+    payload: { clientId },
+  };
+  ws.send(encode(welcomeMsg));
+  console.log(`[WELCOME] Sent clientId to ${clientId}`);
+
+  if (hostClientId === null) {
+    hostClientId = clientId;
+    doc.setHostClientId(hostClientId);
+    console.log(`[INFO] First client connected, set as host: ${hostClientId}`);
+  }
+
   const notes = doc.getNotes();
   const syncMsg: SyncMessage = { type: 'full-sync', payload: notes };
   const syncStr = encode(syncMsg);
   console.log(`[INIT] Sending full-sync to ${clientId}: ${syncStr.substring(0, 100)}...`);
   ws.send(syncStr);
 
+  const role: 'host' | 'guest' = clientId === hostClientId ? 'host' : 'guest';
+  const roleMsg: SyncMessage = {
+    type: 'role-assign',
+    payload: { role, clientId, hostClientId },
+  };
+  ws.send(encode(roleMsg));
+  console.log(`[ROLE] Sent role-assign to ${clientId}: role=${role}, host=${hostClientId}`);
+
+  if (clients.size > 1) {
+    const roleBroadcast: SyncMessage = {
+      type: 'role-assign',
+      payload: { role: 'guest', clientId: '', hostClientId },
+    };
+    broadcast(roleBroadcast, clientId);
+  }
+
   ws.on('message', (data) => handleMessage(data as any, clientId));
 
   ws.on('close', () => {
     clients.delete(clientId);
     console.log(`[INFO] Client ${clientId} disconnected (total: ${clients.size})`);
+
+    if (clientId === hostClientId) {
+      const remainingClients = Array.from(clients.keys());
+      if (remainingClients.length > 0) {
+        hostClientId = remainingClients[0];
+        doc.setHostClientId(hostClientId);
+        console.log(`[INFO] Host disconnected, new host: ${hostClientId}`);
+
+        const hostRoleMsg: SyncMessage = {
+          type: 'role-assign',
+          payload: { role: 'host', clientId: hostClientId, hostClientId },
+        };
+        const newHost = clients.get(hostClientId);
+        if (newHost && newHost.ws.readyState === WebSocket.OPEN) {
+          newHost.ws.send(encode(hostRoleMsg));
+        }
+
+        const guestRoleMsg: SyncMessage = {
+          type: 'role-assign',
+          payload: { role: 'guest', clientId: '', hostClientId },
+        };
+        broadcast(guestRoleMsg, hostClientId);
+      } else {
+        hostClientId = null;
+        doc.setHostClientId(null);
+        console.log('[INFO] Last client disconnected, host cleared');
+      }
+    }
   });
 
   ws.on('error', (err) => {
